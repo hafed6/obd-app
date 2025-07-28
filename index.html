@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>تشخيص أعطال السيارة</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f0f2f5;
+      text-align: center;
+      padding-top: 80px;
+      direction: rtl;
+    }
+    h1 {
+      color: #333;
+    }
+    button {
+      padding: 15px 30px;
+      font-size: 18px;
+      background-color: #0066cc;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 10px;
+    }
+    button:hover {
+      background-color: #004c99;
+    }
+    #status {
+      margin-top: 30px;
+      font-size: 18px;
+      color: #222;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🔧 تشخيص أعطال السيارة</h1>
+  <button onclick="connectToOBD()">🔌 الاتصال بجهاز OBD</button>
+  <div id="status">في انتظار الاتصال...</div>
+
+  <script>
+    const deviceProfiles = [
+      {
+        nameMatch: "Thinkcar",
+        serviceUUID: "0000fff0-0000-1000-8000-00805f9b34fb",
+        characteristicUUID: "0000fff1-0000-1000-8000-00805f9b34fb"
+      },
+      {
+        nameMatch: "OBDLink",
+        serviceUUID: "0000ffe0-0000-1000-8000-00805f9b34fb",
+        characteristicUUID: "0000ffe1-0000-1000-8000-00805f9b34fb"
+      },
+      {
+        nameMatch: "VEEPEAK",
+        serviceUUID: "0000ffe0-0000-1000-8000-00805f9b34fb",
+        characteristicUUID: "0000ffe1-0000-1000-8000-00805f9b34fb"
+      }
+    ];
+
+    async function connectToOBD() {
+      const status = document.getElementById('status');
+      status.innerText = '🔍 جاري البحث عن جهاز OBD...';
+
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: deviceProfiles.map(p => p.serviceUUID)
+        });
+
+        const profile = deviceProfiles.find(p =>
+          device.name && device.name.includes(p.nameMatch)
+        );
+
+        if (!profile) {
+          status.innerText = `❌ الجهاز غير مدعوم: ${device.name}`;
+          return;
+        }
+
+        status.innerText = `✅ تم العثور على الجهاز: ${device.name}\n📡 جاري الاتصال...`;
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(profile.serviceUUID);
+        const characteristic = await service.getCharacteristic(profile.characteristicUUID);
+
+        // بدء الاستماع للإشعارات
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', handleResponse);
+
+        // إرسال أمر لقراءة رموز الأعطال (03)
+        const encoder = new TextEncoder();
+        const command = encoder.encode("03\r");
+        await characteristic.writeValue(command);
+
+        status.innerText += `\n⏳ في انتظار استجابة الجهاز...`;
+
+      } catch (error) {
+        status.innerText = '❌ حدث خطأ: ' + error;
+      }
+    }
+
+    function handleResponse(event) {
+      const value = event.target.value;
+      const decoder = new TextDecoder();
+      const response = decoder.decode(value);
+
+      const status = document.getElementById('status');
+      status.innerText += `\n📟 استجابة:\n${response}`;
+
+      const dtcs = parseDTCResponse(response);
+      if (dtcs.length > 0) {
+        status.innerText += `\n🔍 الأكواد المكتشفة:\n- ${dtcs.join("\n- ")}`;
+      } else {
+        status.innerText += `\n✅ لا توجد أعطال مسجلة.`;
+      }
+    }
+
+    function parseDTCResponse(response) {
+      const lines = response.split('\n').map(l => l.trim()).filter(Boolean);
+      const hexData = lines.join('').replace(/[\s\r>]/g, '');
+
+      if (!hexData.startsWith("43")) return [];
+
+      const codes = [];
+      let i = 2;
+      while (i + 4 <= hexData.length) {
+        const code = hexData.slice(i, i + 4);
+        if (code === "0000") break;
+        codes.push(decodeDTC(code));
+        i += 4;
+      }
+
+      return codes;
+    }
+
+    function decodeDTC(code) {
+      const chars = ['P', 'C', 'B', 'U'];
+      const b1 = parseInt(code[0], 16);
+      const type = chars[(b1 & 0xC) >> 2];
+      const firstDigit = b1 & 0x3;
+      return `${type}${firstDigit}${code.slice(1)}`;
+    }
+  </script>
+</body>
+</html>
